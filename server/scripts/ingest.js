@@ -63,10 +63,17 @@ async function runETL() {
             };
         });
 
-        // 3. Process NSPL (Postcode to OA)
+        // 3. Process NSPL (Map OA to Outward Postcode)
         console.log('Processing NSPL and aggregating...');
-        const nsplCsvPath = path.join(tempDir, 'nspl/Data/NSPL_AUG_2025_UK.csv');
-        const nsplContent = fs.readFileSync(nsplCsvPath, 'utf8');
+        const nsplDir = path.join(tempDir, 'nspl/Data');
+        const nsplFiles = fs.readdirSync(nsplDir);
+        const nsplFileName = nsplFiles.find(f => f.toLowerCase().endsWith('.csv') && f.toLowerCase().includes('uk'));
+        
+        if (!nsplFileName) {
+            throw new Error('Could not find NSPL CSV file in Data folder');
+        }
+
+        const nsplContent = fs.readFileSync(path.join(nsplDir, nsplFileName), 'utf-8');
         const nsplRecords = parse(nsplContent, { columns: true, skip_empty_lines: true });
 
         const summary = {};
