@@ -91,6 +91,16 @@ button:hover {
     background: #d35400;
 }
 
+.export-btn.pdf {
+    background: linear-gradient(135deg, #ff416c, #ff4b2b);
+    color: white;
+}
+
+.export-btn.pdf:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 5px 15px rgba(255, 75, 43, 0.3);
+}
+
 .error-message {
     color: #e74c3c;
     margin-top: 10px;

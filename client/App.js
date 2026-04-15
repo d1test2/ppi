@@ -5,27 +5,9 @@ function App() {
     const [results, setResults] = useState(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
-    const [housingData, setHousingData] = useState({});
     const [compareMode, setCompareMode] = useState(false);
     const [comparePostcodes, setComparePostcodes] = useState(['', '', '']);
     const [compareResults, setCompareResults] = useState([]);
-
-    // Load real ONS data on mount
-    useEffect(() => {
-        loadRealData();
-    }, []);
-
-    const loadRealData = async () => {
-        setLoading(true);
-        try {
-            const data = await window.loadHousingData();
-            setHousingData(data);
-        } catch (err) {
-            setError('Failed to load housing data');
-        } finally {
-            setLoading(false);
-        }
-    };
 
     const normalizePostcode = (code) => {
         return code.trim().toUpperCase().replace(/\s+/g, '');
@@ -37,7 +19,7 @@ function App() {
         return postcodePattern.test(normalized);
     };
 
-    const searchPostcode = () => {
+    const searchPostcode = async () => {
         const normalized = normalizePostcode(postcode);
         setError('');
         setResults(null);
@@ -52,13 +34,47 @@ function App() {
             return;
         }
         
-        const data = housingData[normalized];
-        if (!data) {
-            setError(`Postcode district ${normalized} not found. Try: MK40, MK41, SE18, RM10, MK42`);
+        setLoading(true);
+        try {
+            const response = await fetch(`/api/outward-postcode/${normalized}`);
+            if (!response.ok) {
+                const errData = await response.json();
+                throw new Error(errData.error || 'Postcode not found');
+            }
+            const data = await response.json();
+            setResults(data);
+        } catch (err) {
+            setError(err.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const runComparison = async () => {
+        const validPostcodes = comparePostcodes
+            .map(p => normalizePostcode(p))
+            .filter(p => p);
+        
+        if (validPostcodes.length < 2) {
+            setError('Please enter at least 2 postcodes to compare');
             return;
         }
         
-        setResults(data);
+        setLoading(true);
+        try {
+            const response = await fetch('/api/outward-postcode/compare', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ districts: validPostcodes })
+            });
+            const data = await response.json();
+            setCompareResults(data);
+            setError('');
+        } catch (err) {
+            setError('Failed to run comparison');
+        } finally {
+            setLoading(false);
+        }
     };
 
     const exportCSV = () => {
@@ -72,38 +88,46 @@ ${results.outward_postcode},${results.detached},${results.semi},${results.terrac
         const a = document.createElement('a');
         a.href = url;
         a.download = `housing-stock-${results.outward_postcode}.csv`;
-        document.body.appendChild(a);
         a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
     };
 
-    const runComparison = () => {
-        const validPostcodes = comparePostcodes
-            .map(p => normalizePostcode(p))
-            .filter(p => p && housingData[p]);
-        
-        if (validPostcodes.length < 2) {
-            setError('Please enter at least 2 valid postcodes to compare');
-            return;
-        }
-        
-        const comparisonData = validPostcodes.map(code => housingData[code]);
-        setCompareResults(comparisonData);
-        setError('');
-    };
+    const exportPDF = () => {
+        if (!results) return;
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF();
 
-    if (loading) {
-        return (
-            <div className="container">
-                <div className="loading">
-                    <h2>Loading housing data...</h2>
-                    <p>Processing latest ONS data</p>
-                    <div className="spinner"></div>
-                </div>
-            </div>
-        );
-    }
+        doc.setFontSize(22);
+        doc.text("Housing Stock Breakdown", 20, 20);
+        
+        doc.setFontSize(16);
+        doc.text(`Postcode District: ${results.outward_postcode}`, 20, 40);
+        
+        doc.setFontSize(12);
+        doc.text(`Total Residential Stock: ${results.total_stock.toLocaleString()}`, 20, 55);
+        
+        const columns = ["Type", "Count"];
+        let yPos = 70;
+        
+        const data = [
+            ["Detached", results.detached.toLocaleString()],
+            ["Semi Detached", results.semi.toLocaleString()],
+            ["Terraced", results.terraced.toLocaleString()],
+            ["Flats", results.flat.toLocaleString()],
+            ["Caravan", results.caravan.toLocaleString()]
+        ];
+
+        data.forEach(([type, count]) => {
+            doc.text(`${type}:`, 20, yPos);
+            doc.text(count, 80, yPos);
+            yPos += 10;
+        });
+
+        doc.setFontSize(10);
+        doc.text("Methodology: Official ONS and Census 2021 data.", 20, yPos + 20);
+        doc.text(`Last Updated: ${new Date(results.source.last_updated).toLocaleDateString()}`, 20, yPos + 30);
+
+        doc.save(`housing-report-${results.outward_postcode}.pdf`);
+    };
 
     return (
         <div className="container">
@@ -122,7 +146,9 @@ ${results.outward_postcode},${results.detached},${results.semi},${results.terrac
                             placeholder="Enter postcode district (e.g., MK40, SE18, RM10)"
                             onKeyPress={(e) => e.key === 'Enter' && searchPostcode()}
                         />
-                        <button onClick={searchPostcode}>Search</button>
+                        <button onClick={searchPostcode} disabled={loading}>
+                            {loading ? 'Searching...' : 'Search'}
+                        </button>
                         <button onClick={() => setCompareMode(!compareMode)} className="compare-btn">
                             {compareMode ? 'Single Search' : 'Compare Mode'}
                         </button>
@@ -166,15 +192,13 @@ ${results.outward_postcode},${results.detached},${results.semi},${results.terrac
 
                             <div className="actions">
                                 <button onClick={exportCSV} className="export-btn">Export CSV</button>
+                                <button onClick={exportPDF} className="export-btn pdf">Export PDF</button>
                             </div>
 
                             <div className="methodology">
                                 <h3>Methodology</h3>
-                                <p>This data uses official ONS NSPL and Census 2021 TS044 accommodation type data. 
-                                   Housing stock estimates are calculated by mapping postcodes to Output Areas and 
-                                   aggregating accommodation type counts.</p>
-                                <p><strong>Data sources:</strong> NSPL August 2025, Census 2021 TS044</p>
-                                <p><strong>Last updated:</strong> {new Date().toLocaleDateString()}</p>
+                                <p><strong>Data sources:</strong> NSPL {results.source.nspl_version}, {results.source.ts044_version}</p>
+                                <p><strong>Last updated:</strong> {new Date(results.source.last_updated).toLocaleDateString()}</p>
                             </div>
                         </section>
                     )
@@ -182,36 +206,19 @@ ${results.outward_postcode},${results.detached},${results.semi},${results.terrac
                     <section className="compare-section">
                         <h2>Compare Postcode Districts</h2>
                         <div className="compare-inputs">
-                            <input 
-                                type="text" 
-                                value={comparePostcodes[0]}
-                                onChange={(e) => {
-                                    const newPostcodes = [...comparePostcodes];
-                                    newPostcodes[0] = e.target.value;
-                                    setComparePostcodes(newPostcodes);
-                                }}
-                                placeholder="Postcode 1"
-                            />
-                            <input 
-                                type="text" 
-                                value={comparePostcodes[1]}
-                                onChange={(e) => {
-                                    const newPostcodes = [...comparePostcodes];
-                                    newPostcodes[1] = e.target.value;
-                                    setComparePostcodes(newPostcodes);
-                                }}
-                                placeholder="Postcode 2"
-                            />
-                            <input 
-                                type="text" 
-                                value={comparePostcodes[2]}
-                                onChange={(e) => {
-                                    const newPostcodes = [...comparePostcodes];
-                                    newPostcodes[2] = e.target.value;
-                                    setComparePostcodes(newPostcodes);
-                                }}
-                                placeholder="Postcode 3"
-                            />
+                            {[0, 1, 2].map(i => (
+                                <input 
+                                    key={i}
+                                    type="text" 
+                                    value={comparePostcodes[i]}
+                                    onChange={(e) => {
+                                        const newPostcodes = [...comparePostcodes];
+                                        newPostcodes[i] = e.target.value;
+                                        setComparePostcodes(newPostcodes);
+                                    }}
+                                    placeholder={`Postcode ${i+1}`}
+                                />
+                            ))}
                             <button onClick={runComparison}>Compare</button>
                         </div>
                         
@@ -252,6 +259,5 @@ ${results.outward_postcode},${results.detached},${results.semi},${results.terrac
     );
 }
 
-// Render app
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<App />);
