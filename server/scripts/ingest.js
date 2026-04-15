@@ -7,14 +7,19 @@ const db = require('../db');
 
 // ONS Data URLs
 const TS044_URL = 'https://www.nomisweb.co.uk/output/census/2021/census2021-ts044.zip';
-const NSPL_URL = 'https://www.arcgis.com/sharing/rest/content/items/5973da999af142c6a0860888081f2112/data'; // NSPL August 2025 item id
+// Using the permanent ArcGIS direct link for NSPL Feb 2026
+const NSPL_URL = 'https://www.arcgis.com/sharing/rest/content/items/36b718ad00de49afb9ad364f8b815b9e/data';
 
 async function downloadFile(url, dest) {
     console.log(`Downloading ${url}...`);
     const response = await axios({
         url,
         method: 'GET',
-        responseType: 'stream'
+        responseType: 'stream',
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Referer': 'https://geoportal.statistics.gov.uk/'
+        }
     });
     const writer = fs.createWriteStream(dest);
     response.data.pipe(writer);
