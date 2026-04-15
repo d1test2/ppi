@@ -1,8 +1,5 @@
+modules = ["nodejs-20"]
 run = "npm start"
-entrypoint = "server/server.js"
-
-[modules]
-node = "v20"
 
 [nix]
 channel = "stable-23_11"
