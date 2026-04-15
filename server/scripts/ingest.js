@@ -52,10 +52,17 @@ async function runETL() {
         
         const ts044Parser = fs.createReadStream(ts044File).pipe(parse({ columns: true, skip_empty_lines: true }));
         for await (const row of ts044Parser) {
-            const oa = row['geography code'] || row['Output Areas Code'];
-            const type = row['Accommodation type (8 categories) label'] || row['label'];
-            const count = parseInt(row['observation'] || row['value'], 10);
+            // Smart column detection
+            const oa = row['geography code'] || row['Output Areas Code'] || row['GEOGRAPHY_CODE'];
+            
+            // Find the label/type column dynamically
+            const typeKey = Object.keys(row).find(k => k.toLowerCase().includes('type') || k.toLowerCase().includes('label'));
+            const countKey = Object.keys(row).find(k => k.toLowerCase().includes('observation') || k.toLowerCase().includes('value'));
+            
+            const type = row[typeKey] || '';
+            const count = parseInt(row[countKey] || 0, 10);
 
+            if (!oa) continue;
             if (!ts044Data[oa]) ts044Data[oa] = { detached: 0, semi: 0, terraced: 0, flat: 0, caravan: 0 };
             
             if (type.includes('Detached')) ts044Data[oa].detached = count;
