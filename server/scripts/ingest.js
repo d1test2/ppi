@@ -2,12 +2,11 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
-const { parse } = require('csv-parse/sync');
+const { parse } = require('csv-parse'); // Using streaming version
 const db = require('../db');
 
 // ONS Data URLs
 const TS044_URL = 'https://www.nomisweb.co.uk/output/census/2021/census2021-ts044.zip';
-// Using the permanent ArcGIS direct link for NSPL Feb 2026
 const NSPL_URL = 'https://www.arcgis.com/sharing/rest/content/items/36b718ad00de49afb9ad364f8b815b9e/data';
 
 async function downloadFile(url, dest) {
@@ -21,8 +20,10 @@ async function downloadFile(url, dest) {
             'Referer': 'https://geoportal.statistics.gov.uk/'
         }
     });
+
     const writer = fs.createWriteStream(dest);
     response.data.pipe(writer);
+
     return new Promise((resolve, reject) => {
         writer.on('finish', resolve);
         writer.on('error', reject);
@@ -33,95 +34,94 @@ async function runETL() {
     const tempDir = path.join(__dirname, '../temp_data');
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
 
+    const ts044Zip = path.join(tempDir, 'ts044.zip');
+    const nsplZip = path.join(tempDir, 'nspl.zip');
+
     try {
-        // 1. Download Datasets
-        await downloadFile(TS044_URL, path.join(tempDir, 'ts044.zip'));
-        await downloadFile(NSPL_URL, path.join(tempDir, 'nspl.zip'));
+        await downloadFile(TS044_URL, ts044Zip);
+        await downloadFile(NSPL_URL, nsplZip);
 
         console.log('Extracting datasets...');
-        const ts044Zip = new AdmZip(path.join(tempDir, 'ts044.zip'));
-        ts044Zip.extractAllTo(path.join(tempDir, 'ts044'), true);
+        new AdmZip(ts044Zip).extractAllTo(path.join(tempDir, 'ts044'), true);
+        new AdmZip(nsplZip).extractAllTo(path.join(tempDir, 'nspl'), true);
 
-        const nsplZip = new AdmZip(path.join(tempDir, 'nspl.zip'));
-        nsplZip.extractAllTo(path.join(tempDir, 'nspl'), true);
-
-        // 2. Process TS044 (Accommodation Type by Output Area)
+        // 1. Process TS044 (Accommodation Type counts by OA)
         console.log('Processing TS044...');
-        const ts044CsvPath = path.join(tempDir, 'ts044/census2021-ts044-oa.csv');
-        const ts044Content = fs.readFileSync(ts044CsvPath, 'utf8');
-        const ts044Records = parse(ts044Content, { columns: true, skip_empty_lines: true });
+        const ts044Data = {};
+        const ts044File = path.join(tempDir, 'ts044', 'census2021-ts044-oa.csv');
+        
+        const ts044Parser = fs.createReadStream(ts044File).pipe(parse({ columns: true, skip_empty_lines: true }));
+        for await (const row of ts044Parser) {
+            const oa = row['geography code'] || row['Output Areas Code'];
+            const type = row['Accommodation type (8 categories) label'] || row['label'];
+            const count = parseInt(row['observation'] || row['value'], 10);
 
-        const oaData = {};
-        ts044Records.forEach(row => {
-            const oaCode = row['Output Areas Code'] || row['geography code'];
-            oaData[oaCode] = {
-                detached: parseInt(row['Whole house or bungalow: Detached'] || 0),
-                semi: parseInt(row['Whole house or bungalow: Semi-detached'] || 0),
-                terraced: parseInt(row['Whole house or bungalow: Terraced (including end-terrace)'] || 0),
-                flat: parseInt(row['Flat, maisonette or apartment'] || 0),
-                caravan: parseInt(row['A caravan or other mobile or temporary structure'] || 0)
-            };
-        });
+            if (!ts044Data[oa]) ts044Data[oa] = { detached: 0, semi: 0, terraced: 0, flat: 0, caravan: 0 };
+            
+            if (type.includes('Detached')) ts044Data[oa].detached = count;
+            else if (type.includes('Semi-detached')) ts044Data[oa].semi = count;
+            else if (type.includes('Terraced')) ts044Data[oa].terraced = count;
+            else if (type.includes('Flat') || type.includes('apartment')) ts044Data[oa].flat += count;
+            else if (type.includes('caravan') || type.includes('temporary')) ts044Data[oa].caravan = count;
+        }
 
-        // 3. Process NSPL (Map OA to Outward Postcode)
+        // 2. Process NSPL (Map OA to Outward Postcode)
         console.log('Processing NSPL and aggregating...');
         const nsplDir = path.join(tempDir, 'nspl/Data');
         const nsplFiles = fs.readdirSync(nsplDir);
         const nsplFileName = nsplFiles.find(f => f.toLowerCase().endsWith('.csv') && f.toLowerCase().includes('uk'));
         
-        if (!nsplFileName) {
-            throw new Error('Could not find NSPL CSV file in Data folder');
-        }
-
-        const nsplContent = fs.readFileSync(path.join(nsplDir, nsplFileName), 'utf-8');
-        const nsplRecords = parse(nsplContent, { columns: true, skip_empty_lines: true });
+        if (!nsplFileName) throw new Error('Could not find NSPL CSV file in Data folder');
 
         const summary = {};
-        nsplRecords.forEach(row => {
-            const fullPostcode = row.pcd || row.pcd7;
-            if (!fullPostcode) return;
+        const nsplParser = fs.createReadStream(path.join(nsplDir, nsplFileName)).pipe(parse({ columns: true, skip_empty_lines: true }));
 
-            const outwardPostcode = fullPostcode.trim().replace(/\s+/g, '').slice(0, -3).toUpperCase();
-            const oaCode = row.oa21 || row.oa21cd;
+        for await (const row of nsplParser) {
+            const postcode = row.pcd7 || row.pcd || row.postcode;
+            const oa = row.oa21cd || row.oa11cd;
+            if (!postcode || !oa || !ts044Data[oa]) continue;
 
-            if (!summary[outwardPostcode]) {
-                summary[outwardPostcode] = { detached: 0, semi: 0, terraced: 0, flat: 0, caravan: 0, total_stock: 0 };
+            const outward = postcode.slice(0, -3).trim().toUpperCase();
+            if (!summary[outward]) {
+                summary[outward] = { detached: 0, semi: 0, terraced: 0, flat: 0, caravan: 0, total_stock: 0 };
             }
 
-            const data = oaData[oaCode];
-            if (data) {
-                summary[outwardPostcode].detached += data.detached;
-                summary[outwardPostcode].semi += data.semi;
-                summary[outwardPostcode].terraced += data.terraced;
-                summary[outwardPostcode].flat += data.flat;
-                summary[outwardPostcode].caravan += data.caravan;
-            }
-        });
-
-        // 4. Update Database
-        console.log('Updating database...');
-        for (const [code, stock] of Object.entries(summary)) {
-            const total = stock.detached + stock.semi + stock.terraced + stock.flat + stock.caravan;
-            await db.query(`
-                INSERT INTO outward_postcode_summary 
-                (outward_postcode, detached, semi, terraced, flat, caravan, total_stock)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (outward_postcode) DO UPDATE SET
-                detached = $2, semi = $3, terraced = $4, flat = $5, caravan = $6, total_stock = $7,
-                updated_at = CURRENT_TIMESTAMP
-            `, [code, stock.detached, stock.semi, stock.terraced, stock.flat, total]);
+            const stock = ts044Data[oa];
+            summary[outward].detached += stock.detached;
+            summary[outward].semi += stock.semi;
+            summary[outward].terraced += stock.terraced;
+            summary[outward].flat += stock.flat;
+            summary[outward].caravan += stock.caravan;
         }
 
-        await db.query(`
-            INSERT INTO metadata (nspl_version, ts044_version)
-            VALUES ($1, $2)
-        `, ['August 2025', 'Census 2021']);
+        // 3. Save to Database
+        console.log('Saving to database...');
+        await db.query('BEGIN');
+        await db.query('DELETE FROM outward_postcode_summary');
 
-        console.log('ETL completed successfully.');
+        const insertQuery = `
+            INSERT INTO outward_postcode_summary 
+            (outward_postcode, detached, semi, terraced, flat, caravan, total_stock, source_version)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `;
+
+        for (const [outward, data] of Object.entries(summary)) {
+            const total = data.detached + data.semi + data.terraced + data.flat + data.caravan;
+            if (total === 0) continue;
+            
+            await db.query(insertQuery, [
+                outward, data.detached, data.semi, data.terraced, data.flat, data.caravan, total, 'ONS Feb 2026'
+            ]);
+        }
+
+        await db.query('COMMIT');
+        console.log('ETL completed successfully!');
+
     } catch (err) {
-        console.error('ETL failed:', err);
+        await db.query('ROLLBACK');
+        console.log('ETL failed:', err);
     } finally {
-        // Cleanup temp files if needed
+        // Clean up temp files
         // fs.rmSync(tempDir, { recursive: true, force: true });
     }
 }
