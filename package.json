@@ -1,0 +1,10 @@
+{
+  "name": "ppi-root",
+  "version": "1.0.0",
+  "description": "Postcode Housing Stock App Root",
+  "scripts": {
+    "start": "cd server && npm start",
+    "ingest": "cd server && npm run ingest",
+    "install-all": "cd server && npm install"
+  }
+}
