@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
 const { parse } = require('csv-parse/sync');
-const db = require('../server/db');
+const db = require('../db');
 
 // ONS Data URLs
 const TS044_URL = 'https://www.nomisweb.co.uk/output/census/2021/census2021-ts044.zip';
