@@ -15,13 +15,19 @@ app.use(express.static(path.join(__dirname, '../client')));
 
 // 1. Single postcode search endpoint
 app.get('/api/outward-postcode/:code', async (req, res) => {
-    const code = req.params.code.trim().toUpperCase().replace(/\s+/g, '');
+    const rawCode = req.params.code;
+    const code = rawCode.trim().toUpperCase().replace(/\s+/g, '');
+    
+    console.log(`🔍 Search Request: [${rawCode}] -> Normalized: [${code}]`);
+
     try {
         const result = await db.query(
             'SELECT * FROM outward_postcode_summary WHERE outward_postcode = $1',
             [code]
         );
         
+        console.log(`📊 DB Results for ${code}: ${result.rows.length} rows found`);
+
         if (result.rows.length === 0) {
             return res.status(404).json({ error: 'Postcode district not found' });
         }
@@ -34,7 +40,7 @@ app.get('/api/outward-postcode/:code', async (req, res) => {
             source: meta.rows[0] || { nspl_version: 'Unknown', ts044_version: 'Unknown', last_updated: null }
         });
     } catch (err) {
-        console.error(err);
+        console.error('❌ Database Error:', err);
         res.status(500).json({ error: 'Database error' });
     }
 });
